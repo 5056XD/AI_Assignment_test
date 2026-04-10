@@ -36,9 +36,12 @@ def load_data():
     
     # Feature Engineering for Content-Based
     df['content_features'] = (
-        df['brand_name'] + ' ' + df['os'] + ' ' + df['processor_brand'] + ' ' +
-        df['ram_capacity'].astype(str) + 'GB ' + df['internal_memory'].astype(str) + 'GB'
-    ).str.lower()
+         df['brand_name'].astype(str) + ' ' + 
+         df['os'].astype(str) + ' ' + 
+         df['processor_brand'].astype(str) + ' ' +
+         df['ram_capacity'].astype(str) + 'gb ' + 
+         df['internal_memory'].astype(str) + 'gb'
+    ).fillna('').str.lower()
     
     return df
 
