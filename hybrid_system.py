@@ -22,8 +22,12 @@ df_items['avg_rating'].fillna(mean_rating, inplace=True)
 scaler = MinMaxScaler(feature_range=(0, 5))
 df_items['normalized_avg_rating'] = scaler.fit_transform(df_items[['avg_rating']])
 
-# Handle other missing values and create content text
-df_items.fillna('', inplace=True)
+# Handle other missing values safely based on their data type
+for col in df_items.columns:
+    if df_items[col].dtype == 'object':  # If it's a text column
+        df_items[col] = df_items[col].fillna('')
+    else:  # If it's a number column
+        df_items[col] = df_items[col].fillna(0)
 df_items['content_features'] = (
     df_items['brand_name'].astype(str) + ' ' +
     df_items['os'].astype(str) + ' ' +
