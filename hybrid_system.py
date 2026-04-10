@@ -1,3 +1,4 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -121,6 +122,60 @@ def get_hybrid_recommendations(user_id, top_n=5):
     df_preds = pd.DataFrame(predictions)
     return df_preds.sort_values(by='Final Score', ascending=False).head(top_n)
 
-# Run it!
-print("--- Top 5 Recommendations for User 1 ---")
-print(get_hybrid_recommendations(user_id=1, top_n=5))
+# ==========================================
+# STREAMLIT UI: Run the System and Display
+# ==========================================
+st.title("📱 Hybrid Smartphone Recommender")
+st.write("This system uses Content-Based Filtering, Collaborative Filtering, and Global Popularity to recommend smartphones.")
+
+# Let the user pick a User ID to simulate
+selected_user = st.sidebar.slider("Select User ID to generate recommendations for:", min_value=1, max_value=50, value=1)
+
+st.subheader(f"Top 5 Recommendations for User {selected_user}")
+
+# Generate the recommendations
+with st.spinner("Calculating hybrid scores..."):
+    recommendations_df = get_hybrid_recommendations(user_id=selected_user, top_n=5)
+    
+    # Display the dataframe on the webpage!
+    st.dataframe(recommendations_df, use_container_width=True)
+
+# --- Optional: Show Evaluation Metrics ---
+st.subheader("Model Evaluation Metrics")
+if st.button("Run Evaluation (Takes a few seconds)"):
+    with st.spinner("Running evaluation..."):
+        # We need to modify your evaluate_model slightly to return values instead of printing them
+        # Let's do a quick inline evaluation display:
+        
+        actuals, preds_cb, preds_cf, preds_hybrid = [], [], [], []
+        user_relevant_items = defaultdict(list)
+        user_recommended_items = defaultdict(list)
+
+        for _, row in df_ratings.iterrows():
+            u = row['user_id']
+            i = row['model']
+            actual_rating = row['rating']
+            
+            cb = get_content_prediction(u, i, df_ratings, content_sim_df)
+            cf = get_collab_prediction(u, i, user_item_matrix, user_sim_df)
+            global_avg = df_subset.loc[df_subset['model'] == i, 'normalized_avg_rating'].values[0] if i in df_subset['model'].values else 0
+            
+            hybrid = (0.4 * cb) + (0.4 * cf) + (0.2 * global_avg)
+            
+            actuals.append(actual_rating)
+            preds_cb.append(cb)
+            preds_cf.append(cf)
+            preds_hybrid.append(hybrid)
+            
+            if actual_rating >= 4.0:
+                user_relevant_items[u].append(i)
+            user_recommended_items[u].append((i, hybrid))
+
+        rmse_cb = np.sqrt(mean_squared_error(actuals, preds_cb))
+        rmse_cf = np.sqrt(mean_squared_error(actuals, preds_cf))
+        rmse_hybrid = np.sqrt(mean_squared_error(actuals, preds_hybrid))
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Content-Based RMSE", f"{rmse_cb:.4f}")
+        col2.metric("Collaborative RMSE", f"{rmse_cf:.4f}")
+        col3.metric("Hybrid RMSE", f"{rmse_hybrid:.4f}")
