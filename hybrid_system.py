@@ -129,9 +129,9 @@ st.title("📱 Hybrid Smartphone Recommender")
 st.write("This system uses Content-Based Filtering, Collaborative Filtering, and Global Popularity to recommend smartphones.")
 
 # Let the user pick a User ID to simulate
-selected_user = st.sidebar.slider("Select User ID to generate recommendations for:", min_value=1, max_value=50, value=1)
+selected_user = st.sidebar.slider("Select User ID to generate recommendations of:", min_value=1, max_value=50, value=1)
 
-st.subheader(f"Top 5 Recommendations for User {selected_user}")
+st.subheader(f"Top 5 Recommendations of {selected_user} User ")
 
 # Generate the recommendations
 with st.spinner("Calculating hybrid scores..."):
