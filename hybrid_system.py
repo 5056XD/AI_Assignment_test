@@ -1,14 +1,18 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
-from collections import defaultdict
-import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Hybrid Recommender", layout="wide")
+# ==========================================
+# PAGE CONFIG
+# ==========================================
+st.set_page_config(page_title="Hybrid AI Recommender", layout="wide")
 
 # ==========================================
 # LOAD DATA
@@ -22,11 +26,11 @@ def load_data():
     df['avg_rating'] = pd.to_numeric(df['avg_rating'], errors='coerce').fillna(3.0)
 
     df['content_features'] = (
-        df['brand_name'] + " " +
-        df['os'] + " " +
-        df['processor_brand'] + " " +
-        df['ram_capacity'].astype(str) + "GB " +
-        df['internal_memory'].astype(str) + "GB"
+        df['brand_name'].astype(str) + ' ' +
+        df['os'].astype(str) + ' ' +
+        df['processor_brand'].astype(str) + ' ' +
+        df['ram_capacity'].astype(str) + 'GB ' +
+        df['internal_memory'].astype(str) + 'GB'
     ).str.lower()
 
     return df
@@ -38,6 +42,7 @@ df_items = load_data()
 # ==========================================
 tfidf = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf.fit_transform(df_items['content_features'])
+
 content_sim = cosine_similarity(tfidf_matrix)
 
 content_sim_df = pd.DataFrame(
@@ -47,49 +52,54 @@ content_sim_df = pd.DataFrame(
 )
 
 # ==========================================
-# CREATE MOCK USER RATINGS
+# MOCK USER RATINGS
 # ==========================================
 np.random.seed(42)
 
-users = 50
-models = df_items['model'].sample(150, random_state=42).tolist()
-
 ratings = []
-for u in range(1, users+1):
+models = df_items['model'].sample(min(150, len(df_items)), random_state=42).tolist()
+
+for u in range(1, 51):
     for m in np.random.choice(models, np.random.randint(5, 20), replace=False):
         ratings.append({
-            "user": u,
-            "model": m,
-            "rating": float(np.random.randint(1, 6))
+            'user': u,
+            'model': m,
+            'rating': float(np.random.randint(1, 6))
         })
 
 df_ratings = pd.DataFrame(ratings)
 
 # ==========================================
-# TRAIN TEST SPLIT (IMPORTANT FIX)
+# TRAIN TEST SPLIT
 # ==========================================
 train, test = train_test_split(df_ratings, test_size=0.2, random_state=42)
 
 # USER-ITEM MATRIX
 user_item = train.pivot_table(index='user', columns='model', values='rating').fillna(0)
+
 user_sim = cosine_similarity(user_item)
 
-user_sim_df = pd.DataFrame(user_sim, index=user_item.index, columns=user_item.index)
+user_sim_df = pd.DataFrame(
+    user_sim,
+    index=user_item.index,
+    columns=user_item.index
+)
 
 # ==========================================
 # PREDICTION FUNCTIONS
 # ==========================================
 def predict_cb(user, item):
     user_data = train[train['user'] == user]
-    
+
     if user_data.empty:
         return 3.0  # cold start
 
     num, den = 0, 0
     for _, row in user_data.iterrows():
-        sim = content_sim_df.loc[item, row['model']]
-        num += sim * row['rating']
-        den += sim
+        if row['model'] in content_sim_df.columns:
+            sim = content_sim_df.loc[item, row['model']]
+            num += sim * row['rating']
+            den += sim
 
     return num / den if den > 0 else 3.0
 
@@ -101,13 +111,12 @@ def predict_cf(user, item):
     sim_users = user_sim_df.loc[user].drop(user)
     item_ratings = user_item[item]
 
-    # Only keep users who rated this item
+    # users who rated this item
     valid_users = item_ratings[item_ratings > 0].index
 
     if len(valid_users) == 0:
         return 3.0
 
-    # Align BOTH vectors
     sim = sim_users.loc[valid_users].values
     ratings = item_ratings.loc[valid_users].values
 
@@ -121,11 +130,13 @@ def predict_hybrid(user, item):
     cb = predict_cb(user, item)
     cf = predict_cf(user, item)
 
-    # REQUIRED FORMULA
+    if np.isnan(cb): cb = 3.0
+    if np.isnan(cf): cf = 3.0
+
     return (0.5 * cb) + (0.5 * cf)
 
 # ==========================================
-# EVALUATION FUNCTIONS
+# EVALUATION
 # ==========================================
 def evaluate_rmse():
     y_true, y_cb, y_cf, y_hyb = [], [], [], []
@@ -133,14 +144,10 @@ def evaluate_rmse():
     for _, row in test.iterrows():
         u, m, r = row['user'], row['model'], row['rating']
 
-        cb = predict_cb(u, m)
-        cf = predict_cf(u, m)
-        hyb = predict_hybrid(u, m)
-
         y_true.append(r)
-        y_cb.append(cb)
-        y_cf.append(cf)
-        y_hyb.append(hyb)
+        y_cb.append(predict_cb(u, m))
+        y_cf.append(predict_cf(u, m))
+        y_hyb.append(predict_hybrid(u, m))
 
     return (
         mean_squared_error(y_true, y_cb, squared=False),
@@ -156,13 +163,11 @@ def precision_recall_f1(k=5):
 
     for u in users:
         user_test = test[test['user'] == u]
-
         relevant = user_test[user_test['rating'] >= 4]['model'].tolist()
 
         scores = []
         for m in df_items['model']:
-            score = predict_hybrid(u, m)
-            scores.append((m, score))
+            scores.append((m, predict_hybrid(u, m)))
 
         top_k = sorted(scores, key=lambda x: x[1], reverse=True)[:k]
         top_k_items = [i[0] for i in top_k]
@@ -170,24 +175,24 @@ def precision_recall_f1(k=5):
         hits = len(set(top_k_items) & set(relevant))
 
         precision.append(hits / k)
-        recall.append(hits / len(relevant) if relevant else 1)
+        recall.append(hits / len(relevant) if len(relevant) > 0 else 1)
 
     p = np.mean(precision)
     r = np.mean(recall)
-    f1 = 2 * p * r / (p + r) if (p + r) else 0
+    f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
 
     return p, r, f1
 
 # ==========================================
 # STREAMLIT UI
 # ==========================================
-st.title("📱 Hybrid Smartphone Recommender")
+st.title("📱 Hybrid Smartphone Recommender System")
 
-tab1, tab2 = st.tabs(["Recommendations", "Evaluation"])
+tab1, tab2 = st.tabs(["🎯 Recommendations", "📊 Evaluation"])
 
-# =========================
+# ==========================================
 # TAB 1
-# =========================
+# ==========================================
 with tab1:
     user_id = st.slider("Select User", 1, 50, 1)
 
@@ -198,23 +203,29 @@ with tab1:
 
     top = sorted(results, key=lambda x: x[1], reverse=True)[:5]
 
-    st.subheader("Top 5 Recommendations")
-    st.table(pd.DataFrame(top, columns=["Smartphone", "Score"]))
+    st.subheader("Top 5 Recommended Smartphones")
+    st.dataframe(pd.DataFrame(top, columns=["Smartphone", "Score"]))
 
-# =========================
+# ==========================================
 # TAB 2
-# =========================
+# ==========================================
 with tab2:
     if st.button("Run Evaluation"):
         rmse_cb, rmse_cf, rmse_hyb = evaluate_rmse()
         p, r, f1 = precision_recall_f1()
 
-        st.subheader("RMSE Comparison")
+        st.subheader("📉 RMSE Comparison")
         st.write(f"Content-Based RMSE: {rmse_cb:.3f}")
         st.write(f"Collaborative RMSE: {rmse_cf:.3f}")
         st.write(f"Hybrid RMSE: {rmse_hyb:.3f}")
 
-        st.subheader("Top-K Metrics (K=5)")
-        st.write(f"Precision: {p:.3f}")
-        st.write(f"Recall: {r:.3f}")
+        st.subheader("📊 Top-K Metrics (K=5)")
+        st.write(f"Precision@5: {p:.3f}")
+        st.write(f"Recall@5: {r:.3f}")
         st.write(f"F1 Score: {f1:.3f}")
+
+        # OPTIONAL PLOT
+        fig, ax = plt.subplots()
+        ax.bar(["CB", "CF", "Hybrid"], [rmse_cb, rmse_cf, rmse_hyb])
+        ax.set_title("RMSE Comparison")
+        st.pyplot(fig)
