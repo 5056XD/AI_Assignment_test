@@ -95,17 +95,26 @@ def predict_cb(user, item):
 
 
 def predict_cf(user, item):
-    if item not in user_item.columns:
+    if item not in user_item.columns or user not in user_sim_df.index:
         return 3.0
 
-    sim_users = user_sim_df[user].drop(user)
+    sim_users = user_sim_df.loc[user].drop(user)
     item_ratings = user_item[item]
 
-    mask = item_ratings > 0
-    if not mask.any():
+    # Only keep users who rated this item
+    valid_users = item_ratings[item_ratings > 0].index
+
+    if len(valid_users) == 0:
         return 3.0
 
-    return np.dot(sim_users[mask], item_ratings[mask]) / sim_users[mask].sum()
+    # Align BOTH vectors
+    sim = sim_users.loc[valid_users].values
+    ratings = item_ratings.loc[valid_users].values
+
+    if sim.sum() == 0:
+        return 3.0
+
+    return np.dot(sim, ratings) / sim.sum()
 
 
 def predict_hybrid(user, item):
