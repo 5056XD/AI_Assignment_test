@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_squared_error
@@ -141,12 +142,77 @@ with tab2:
         c4.metric("F1-Score", f"{f1:.2f}")
 
 with tab3:
-    st.header("Project Gantt Chart")
-    gantt_data = [
-        dict(Task="Data Preprocessing", Start='2026-01-01', Finish='2026-01-05', Member="Member 1"),
-        dict(Task="Algorithm Development", Start='2026-01-06', Finish='2026-01-15', Member="Member 2"),
-        dict(Task="Hybrid Integration", Start='2026-01-16', Finish='2026-01-22', Member="Member 3"),
-        dict(Task="UI & Deployment", Start='2026-01-23', Finish='2026-01-30', Member="Group")
-    ]
-    fig = px.timeline(gantt_data, x_start="Start", x_end="Finish", y="Task", color="Member")
-    st.plotly_chart(fig, use_container_width=True)
+    st.header("📈 Evaluation Metrics vs K")
+    st.write("This graph illustrates the trade-off between Precision and Recall as the number of recommended items (K) increases.")
+    
+    if st.button("Generate Metrics vs K Graph (Takes 10-15 seconds)"):
+        with st.spinner("Calculating metrics for K=1 through 10..."):
+            k_values = list(range(1, 11))
+            precisions = []
+            recalls = []
+            f1_scores = []
+            
+            # Use a sample of users for speed in the Streamlit app
+            sample_users = df_ratings['user_id'].unique()[:15] 
+            
+            # Pre-calculate scores for speed
+            user_relevant_items = defaultdict(list)
+            user_recommended_items = defaultdict(list)
+            
+            for u in sample_users:
+                u_ratings = df_ratings[df_ratings['user_id'] == u]
+                for _, row in u_ratings.iterrows():
+                    m = row['model']
+                    act = row['rating']
+                    
+                    if act >= 4.0:
+                        user_relevant_items[u].append(m)
+                        
+                    # Calculate hybrid score
+                    cb = predict_cb(u, m)
+                    cf = predict_cf(u, m)
+                    glob = df_items.loc[df_items['model'] == m, 'normalized_avg_rating'].values[0]
+                    hyb = (0.5 * cf) + (0.3 * cb) + (0.2 * glob)
+                    
+                    user_recommended_items[u].append((m, hyb))
+            
+            # Loop through different values of K
+            for k in k_values:
+                k_prec, k_rec = [], []
+                for u in sample_users:
+                    recs = sorted(user_recommended_items[u], key=lambda x: x[1], reverse=True)[:k]
+                    top_k_items = [item for item, score in recs]
+                    rel_items = user_relevant_items[u]
+                    
+                    hits = len(set(top_k_items).intersection(set(rel_items)))
+                    k_prec.append(hits / k)
+                    k_rec.append(hits / len(rel_items) if len(rel_items) > 0 else 1)
+                
+                avg_prec = np.mean(k_prec)
+                avg_rec = np.mean(k_rec)
+                f1 = 2 * (avg_prec * avg_rec) / (avg_prec + avg_rec) if (avg_prec + avg_rec) > 0 else 0
+                
+                precisions.append(avg_prec)
+                recalls.append(avg_rec)
+                f1_scores.append(f1)
+            
+            # ----------------------------------------
+            # Draw the Plotly Line Graph
+            # ----------------------------------------
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(x=k_values, y=precisions, mode='lines+markers', name='Precision@K', line=dict(color='blue', width=3)))
+            fig.add_trace(go.Scatter(x=k_values, y=recalls, mode='lines+markers', name='Recall@K', line=dict(color='green', width=3)))
+            fig.add_trace(go.Scatter(x=k_values, y=f1_scores, mode='lines+markers', name='F1-Score', line=dict(color='red', width=3, dash='dash')))
+            
+            fig.update_layout(
+                title="Performance Metrics Across Different Top-K Recommendations",
+                xaxis_title="Number of Recommendations (K)",
+                yaxis_title="Score (0.0 to 1.0)",
+                xaxis=dict(tickmode='linear', dtick=1),
+                yaxis=dict(range=[0, 1.05]), # Keep Y axis scaled properly
+                hovermode="x unified",
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
