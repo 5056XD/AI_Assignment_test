@@ -4,228 +4,205 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# PAGE CONFIG
+# PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(page_title="Hybrid AI Recommender", layout="wide")
 
 # ==========================================
-# LOAD DATA
+# 1. LOAD & PREPROCESS DATA
 # ==========================================
 @st.cache_data
 def load_data():
     df = pd.read_csv('smartphones.csv')
     df = df.drop_duplicates(subset=['model']).reset_index(drop=True)
-
-    df = df.fillna('')
-    df['avg_rating'] = pd.to_numeric(df['avg_rating'], errors='coerce').fillna(3.0)
-
+    
+    df['avg_rating'] = df['avg_rating'].fillna(df['avg_rating'].mean())
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].fillna('')
+        else:
+            df[col] = df[col].fillna(0)
+            
+    scaler = MinMaxScaler(feature_range=(0, 5))
+    df['normalized_avg_rating'] = scaler.fit_transform(df[['avg_rating']])
+    
     df['content_features'] = (
-        df['brand_name'].astype(str) + ' ' +
-        df['os'].astype(str) + ' ' +
-        df['processor_brand'].astype(str) + ' ' +
-        df['ram_capacity'].astype(str) + 'GB ' +
-        df['internal_memory'].astype(str) + 'GB'
-    ).str.lower()
-
+         df['brand_name'].astype(str) + ' ' + 
+         df['os'].astype(str) + ' ' + 
+         df['processor_brand'].astype(str) + ' ' +
+         df['ram_capacity'].astype(str) + 'gb ' + 
+         df['internal_memory'].astype(str) + 'gb'
+    ).fillna('').str.lower()
+    
     return df
 
 df_items = load_data()
 
 # ==========================================
-# CONTENT-BASED MODEL
+# 2. AI ENGINES SETUP
 # ==========================================
 tfidf = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf.fit_transform(df_items['content_features'])
+content_sim_matrix = cosine_similarity(tfidf_matrix)
+content_sim_df = pd.DataFrame(content_sim_matrix, index=df_items['model'], columns=df_items['model'])
 
-content_sim = cosine_similarity(tfidf_matrix)
-
-content_sim_df = pd.DataFrame(
-    content_sim,
-    index=df_items['model'],
-    columns=df_items['model']
-)
-
-# ==========================================
-# MOCK USER RATINGS
-# ==========================================
 np.random.seed(42)
+sample_phones = df_items['model'].sample(150, random_state=42).tolist()
+mock_ratings = []
+for u_id in range(1, 51):
+    n = np.random.randint(5, 20)
+    for p in np.random.choice(sample_phones, n, replace=False):
+        mock_ratings.append({'user_id': u_id, 'model': p, 'rating': float(np.random.randint(1, 6))})
+df_ratings = pd.DataFrame(mock_ratings)
 
-ratings = []
-models = df_items['model'].sample(min(150, len(df_items)), random_state=42).tolist()
+user_item_matrix = df_ratings.pivot_table(index='user_id', columns='model', values='rating').fillna(0)
+user_sim_df = pd.DataFrame(cosine_similarity(user_item_matrix), index=user_item_matrix.index, columns=user_item_matrix.index)
 
-for u in range(1, 51):
-    for m in np.random.choice(models, np.random.randint(5, 20), replace=False):
-        ratings.append({
-            'user': u,
-            'model': m,
-            'rating': float(np.random.randint(1, 6))
-        })
-
-df_ratings = pd.DataFrame(ratings)
-
-# ==========================================
-# TRAIN TEST SPLIT
-# ==========================================
-train, test = train_test_split(df_ratings, test_size=0.2, random_state=42)
-
-# USER-ITEM MATRIX
-user_item = train.pivot_table(index='user', columns='model', values='rating').fillna(0)
-
-user_sim = cosine_similarity(user_item)
-
-user_sim_df = pd.DataFrame(
-    user_sim,
-    index=user_item.index,
-    columns=user_item.index
-)
-
-# ==========================================
-# PREDICTION FUNCTIONS
-# ==========================================
-def predict_cb(user, item):
-    user_data = train[train['user'] == user]
-
-    if user_data.empty:
-        return 3.0  # cold start
-
+def predict_cb(u_id, item):
+    u_ratings = df_ratings[df_ratings['user_id'] == u_id]
     num, den = 0, 0
-    for _, row in user_data.iterrows():
-        if row['model'] in content_sim_df.columns:
-            sim = content_sim_df.loc[item, row['model']]
-            num += sim * row['rating']
-            den += sim
-
+    for _, row in u_ratings.iterrows():
+        sim = content_sim_df.loc[item, row['model']]
+        num += sim * row['rating']
+        den += sim
     return num / den if den > 0 else 3.0
 
-
-def predict_cf(user, item):
-    if item not in user_item.columns or user not in user_sim_df.index:
-        return 3.0
-
-    sim_users = user_sim_df.loc[user].drop(user)
-    item_ratings = user_item[item]
-
-    # users who rated this item
-    valid_users = item_ratings[item_ratings > 0].index
-
-    if len(valid_users) == 0:
-        return 3.0
-
-    sim = sim_users.loc[valid_users].values
-    ratings = item_ratings.loc[valid_users].values
-
-    if sim.sum() == 0:
-        return 3.0
-
-    return np.dot(sim, ratings) / sim.sum()
-
-
-def predict_hybrid(user, item):
-    cb = predict_cb(user, item)
-    cf = predict_cf(user, item)
-
-    if np.isnan(cb): cb = 3.0
-    if np.isnan(cf): cf = 3.0
-
-    return (0.5 * cb) + (0.5 * cf)
+def predict_cf(u_id, item):
+    if item not in user_item_matrix.columns: return 3.0
+    sim_users = user_sim_df[u_id].drop(u_id)
+    item_rats = user_item_matrix[item].drop(u_id)
+    mask = item_rats > 0
+    if not mask.any(): return 3.0
+    return np.dot(sim_users[mask], item_rats[mask]) / sim_users[mask].sum()
 
 # ==========================================
-# EVALUATION
+# 3. MAIN DASHBOARD
 # ==========================================
-def evaluate_rmse():
-    y_true, y_cb, y_cf, y_hyb = [], [], [], []
+st.title("📱 Hybrid Smartphone Recommender")
 
-    for _, row in test.iterrows():
-        u, m, r = row['user'], row['model'], row['rating']
+tab1, tab2 = st.tabs(["🎯 Live Recommendations", "📊 System Evaluation"])
 
-        y_true.append(r)
-        y_cb.append(predict_cb(u, m))
-        y_cf.append(predict_cf(u, m))
-        y_hyb.append(predict_hybrid(u, m))
-
-    return (
-        mean_squared_error(y_true, y_cb, squared=False),
-        mean_squared_error(y_true, y_cf, squared=False),
-        mean_squared_error(y_true, y_hyb, squared=False),
-    )
-
-
-def precision_recall_f1(k=5):
-    users = test['user'].unique()[:10]
-
-    precision, recall = [], []
-
-    for u in users:
-        user_test = test[test['user'] == u]
-        relevant = user_test[user_test['rating'] >= 4]['model'].tolist()
-
-        scores = []
-        for m in df_items['model']:
-            scores.append((m, predict_hybrid(u, m)))
-
-        top_k = sorted(scores, key=lambda x: x[1], reverse=True)[:k]
-        top_k_items = [i[0] for i in top_k]
-
-        hits = len(set(top_k_items) & set(relevant))
-
-        precision.append(hits / k)
-        recall.append(hits / len(relevant) if len(relevant) > 0 else 1)
-
-    p = np.mean(precision)
-    r = np.mean(recall)
-    f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
-
-    return p, r, f1
-
-# ==========================================
-# STREAMLIT UI
-# ==========================================
-st.title("📱 Hybrid Smartphone Recommender System")
-
-tab1, tab2 = st.tabs(["🎯 Recommendations", "📊 Evaluation"])
-
-# ==========================================
-# TAB 1
-# ==========================================
+# --- TAB 1: RECOMMENDATIONS ---
 with tab1:
-    user_id = st.slider("Select User", 1, 50, 1)
+    selected_user = st.slider("Select User ID to generate recommendations:", 1, 50, 1)
+    st.subheader(f"Top 5 Recommendations for User {selected_user}")
+    
+    with st.spinner("Calculating..."):
+        all_models = df_items['model'].unique()
+        rated = df_ratings[df_ratings['user_id'] == selected_user]['model'].tolist()
+        unrated = [m for m in all_models if m not in rated]
+        
+        results = []
+        for m in unrated[:100]: 
+            cb = predict_cb(selected_user, m)
+            cf = predict_cf(selected_user, m)
+            glob = df_items.loc[df_items['model'] == m, 'normalized_avg_rating'].values[0]
+            final = (0.5 * cf) + (0.3 * cb) + (0.2 * glob)
+            
+            results.append({
+                'Smartphone': m, 
+                'Hybrid Score': round(final, 2), 
+                'Content': round(cb, 2), 
+                'Collab': round(cf, 2)
+            })
+        
+        recs = pd.DataFrame(results).sort_values(by='Hybrid Score', ascending=False).head(5)
+        st.dataframe(recs, use_container_width=True)
 
-    results = []
-    for m in df_items['model']:
-        score = predict_hybrid(user_id, m)
-        results.append((m, score))
-
-    top = sorted(results, key=lambda x: x[1], reverse=True)[:5]
-
-    st.subheader("Top 5 Recommended Smartphones")
-    st.dataframe(pd.DataFrame(top, columns=["Smartphone", "Score"]))
-
-# ==========================================
-# TAB 2
-# ==========================================
+# --- TAB 2: METRICS VS K (YOUR EXACT CODE) ---
 with tab2:
-    if st.button("Run Evaluation"):
-        rmse_cb, rmse_cf, rmse_hyb = evaluate_rmse()
-        p, r, f1 = precision_recall_f1()
+    st.subheader("📊 Evaluation Metrics vs K")
 
-        st.subheader("📉 RMSE Comparison")
-        st.write(f"Content-Based RMSE: {rmse_cb:.3f}")
-        st.write(f"Collaborative RMSE: {rmse_cf:.3f}")
-        st.write(f"Hybrid RMSE: {rmse_hyb:.3f}")
+    if st.button("Generate Evaluation Chart"):
+        with st.spinner("Running calculations for K=1 to 10..."):
+            k_values = list(range(1, 11))
+            precision_scores = []
+            recall_scores = []
+            f1_scores = []
 
-        st.subheader("📊 Top-K Metrics (K=5)")
-        st.write(f"Precision@5: {p:.3f}")
-        st.write(f"Recall@5: {r:.3f}")
-        st.write(f"F1 Score: {f1:.3f}")
+            # 1. Pre-calculate user data for speed
+            sample_users = df_ratings['user_id'].unique()[:15] 
+            user_relevant = defaultdict(list)
+            user_recs = defaultdict(list)
 
-        # OPTIONAL PLOT
-        fig, ax = plt.subplots()
-        ax.bar(["CB", "CF", "Hybrid"], [rmse_cb, rmse_cf, rmse_hyb])
-        ax.set_title("RMSE Comparison")
-        st.pyplot(fig)
+            for u in sample_users:
+                u_ratings = df_ratings[df_ratings['user_id'] == u]
+                for _, row in u_ratings.iterrows():
+                    m = row['model']
+                    if row['rating'] >= 4.0:
+                        user_relevant[u].append(m)
+                    
+                    cb = predict_cb(u, m)
+                    cf = predict_cf(u, m)
+                    glob = df_items.loc[df_items['model'] == m, 'normalized_avg_rating'].values[0] if m in df_items['model'].values else 0
+                    hyb = (0.5 * cf) + (0.3 * cb) + (0.2 * glob)
+                    user_recs[u].append((m, hyb))
+
+            # 2. Run the K-Loop
+            for k in k_values:
+                k_prec, k_rec = [], []
+                for u in sample_users:
+                    sorted_recs = sorted(user_recs[u], key=lambda x: x[1], reverse=True)[:k]
+                    top_k_items = [item for item, score in sorted_recs]
+                    rel_items = user_relevant[u]
+                    
+                    hits = len(set(top_k_items).intersection(set(rel_items)))
+                    k_prec.append(hits / k)
+                    k_rec.append(hits / len(rel_items) if len(rel_items) > 0 else 1)
+                
+                avg_p = np.mean(k_prec)
+                avg_r = np.mean(k_rec)
+                f1 = 2 * (avg_p * avg_r) / (avg_p + avg_r) if (avg_p + avg_r) > 0 else 0
+                
+                precision_scores.append(avg_p)
+                recall_scores.append(avg_r)
+                f1_scores.append(f1)
+
+            # ==============================
+            # PLOT (Your Code)
+            # ==============================
+            fig, ax = plt.subplots()
+
+            ax.plot(k_values, precision_scores, marker='o', label='Precision')
+            ax.plot(k_values, recall_scores, marker='s', label='Recall')
+            ax.plot(k_values, f1_scores, marker='^', label='F1-score')
+
+            ax.set_xlabel("K (Top Recommendations)")
+            ax.set_ylabel("Score")
+            ax.set_title("Evaluation Metrics vs K")
+            ax.legend()
+
+            st.pyplot(fig)
+
+            # ==============================
+            # TABLE (Your Code)
+            # ==============================
+            result_df = pd.DataFrame({
+                'K': k_values,
+                'Precision': precision_scores,
+                'Recall': recall_scores,
+                'F1-score': f1_scores
+            })
+
+            st.dataframe(result_df, use_container_width=True)
+
+            # ==============================
+            # AVERAGE METRICS (Your Code)
+            # ==============================
+            avg_precision = np.mean(precision_scores)
+            avg_recall = np.mean(recall_scores)
+            avg_f1 = np.mean(f1_scores)
+
+            st.subheader("📌 Average Evaluation Metrics")
+
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric("Avg Precision", f"{avg_precision:.4f}")
+            col2.metric("Avg Recall", f"{avg_recall:.4f}")
+            col3.metric("Avg F1-score", f"{avg_f1:.4f}")
